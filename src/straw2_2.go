@@ -1,11 +1,17 @@
 package main
 
 import (
+	"bufio"
 	"encoding/binary"
+	"flag"
 	"fmt"
 	"hash/crc32"
+	"io"
 	"math"
 	"math/rand"
+	"os"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -321,6 +327,10 @@ func (self *PE) ScaleDownMg(device *Device, mg_id uint32) {
 	}
 }
 
+func (self *PE) PrintSimpleInfo() string {
+	return fmt.Sprintf("PE[%d]: counts = %d, %s\n", self.id, len(self.data), self.migrate.String())
+}
+
 func (self *PE) PrintCount() string {
 	return fmt.Sprintf("PE[%d]: counts = %d\n", self.id, len(self.data))
 }
@@ -511,12 +521,22 @@ func (self *MG) Clone() *MG {
 	return mg
 }
 
+func (self *MG) PrintSimpleInfo() string {
+	str := fmt.Sprintf("MG[%d]: total = %d, %s\n", self.id, self.total, self.migrate.String())
+
+	for _, pe := range self.pes {
+		str += fmt.Sprintf("    %s", pe.PrintSimpleInfo())
+	}
+	return str
+}
+
 func (self *MG) PrintCount() string {
 	str := fmt.Sprintf("MG[%d]: total = %d\n", self.id, self.total)
 
 	for _, pe := range self.pes {
 		str += fmt.Sprintf("    %s", pe.PrintCount())
 	}
+
 	return str
 }
 
@@ -698,6 +718,14 @@ func (self *Device) SetPeWeight(mg_index, pe_index, weight uint32) {
 	self.mgs[mg_index].SetPeWeight(pe_index, weight)
 }
 
+func (self *Device) PrintSimpleInfo() string {
+	str := fmt.Sprintf("Device[%d]: total = %d\n", self.id, self.total)
+	for _, mg := range self.mgs {
+		str += mg.PrintSimpleInfo()
+	}
+	return str
+}
+
 func (self *Device) PrintCount() string {
 	str := fmt.Sprintf("Device[%d]: total = %d\n", self.id, self.total)
 	for _, mg := range self.mgs {
@@ -872,99 +900,407 @@ func NewRands(num uint32) map[uint32]uint32 {
 	return rands
 }
 
-func main() {
+type ActionScaleOut struct {
+	mg_id     uint32
+	pe_num    uint32
+	pe_weight uint32
+}
 
-	rands := NewRands(4000000)
-	fmt.Println(len(rands))
+func (self *ActionScaleOut) Run(sbc *Device) *Device {
+	return sbc.ScaleOutMg(self.mg_id, self.pe_num, self.pe_weight)
+}
 
-	sbc := NewDevice(2, 20, 4)
+func (self *ActionScaleOut) Enter() string {
+	str := fmt.Sprintf("---------------------------------------------------------------------\n")
+	str += fmt.Sprintf("Scale out: add MG[%d], PE_Num = %d, PE_Weight = %d\n", self.mg_id, self.pe_num, self.pe_weight)
+	str += fmt.Sprintf("---------------------------------------------------------------------\n")
+	return str
+}
 
-	fmt.Printf("------------------------------------------------\n")
-	fmt.Printf("power on\n")
-	fmt.Printf("------------------------------------------------\n")
+type ActionScaleIn struct {
+	mg_id uint32
+}
 
-	start_time := time.Now()
+func (self *ActionScaleIn) Run(sbc *Device) *Device {
+	return sbc.ScaleInMg(self.mg_id)
+}
+
+func (self *ActionScaleIn) Enter() string {
+	str := fmt.Sprintf("---------------------------------------------------------------------\n")
+	str += fmt.Sprintf("Scale in: del MG[%d]\n", self.mg_id)
+	str += fmt.Sprintf("---------------------------------------------------------------------\n")
+	return str
+}
+
+type ActionScaleUp struct {
+	mg_id     uint32
+	pe_id     uint32
+	pe_weight uint32
+}
+
+func (self *ActionScaleUp) Run(sbc *Device) *Device {
+	return sbc.ScaleUpMg(self.mg_id, self.pe_id, self.pe_weight)
+}
+
+func (self *ActionScaleUp) Enter() string {
+	str := fmt.Sprintf("---------------------------------------------------------------------\n")
+	str += fmt.Sprintf("Scale up: add MG[%d], PE[%d], PE_Weight = %d\n", self.mg_id, self.pe_id, self.pe_weight)
+	str += fmt.Sprintf("---------------------------------------------------------------------\n")
+	return str
+}
+
+type ActionScaleDown struct {
+	mg_id uint32
+	pe_id uint32
+}
+
+func (self *ActionScaleDown) Run(sbc *Device) *Device {
+	return sbc.ScaleDownMg(self.mg_id, self.pe_id)
+}
+
+func (self *ActionScaleDown) Enter() string {
+	str := fmt.Sprintf("---------------------------------------------------------------------\n")
+	str += fmt.Sprintf("Scale down: del MG[%d] PE[%d]\n", self.mg_id, self.pe_id)
+	str += fmt.Sprintf("---------------------------------------------------------------------\n")
+	return str
+}
+
+type Action interface {
+	Run(sbc *Device) *Device
+	Enter() string
+}
+
+type ActionPowerOn struct {
+	rands_num uint32
+	mg_num    uint32
+	pe_num    uint32
+	pe_weight uint32
+}
+
+func (self *ActionPowerOn) Run(sbc *Device) *Device {
+	rands := NewRands(self.rands_num)
+	sbc = NewDevice(self.mg_num, self.pe_num, self.pe_weight)
+
 	for key, _ := range rands {
 		mg_id, pe_id := sbc.Select(key)
 		sbc.AddDataById(mg_id, pe_id, key)
 	}
-	elapsed := time.Since(start_time)
 
-	fmt.Printf("%s", sbc.PrintCount())
-	fmt.Printf("%s", sbc.PrintMigrate())
-	fmt.Printf("use time: %v\n", elapsed)
+	return sbc
+}
 
-	//*
-	fmt.Printf("------------------------------------------------\n")
-	fmt.Printf("Scale out: add MG[100], PE_Num = 20, PE weight=4\n")
-	fmt.Printf("------------------------------------------------\n")
+func (self *ActionPowerOn) Enter() string {
+	str := fmt.Sprintf("---------------------------------------------------------------------\n")
+	str += fmt.Sprintf("Power On: Rand_Num = %d, MG_Num = %d PE_Num = %d, PE_Weight = %d\n", self.rands_num, self.mg_num, self.pe_num, self.pe_weight)
+	str += fmt.Sprintf("---------------------------------------------------------------------\n")
+	return str
+}
 
-	start_time = time.Now()
-	new_sbc := sbc.ScaleOutMg(100, 20, 4)
-	elapsed = time.Since(start_time)
+type ActionList struct {
+	actions []Action
+}
 
-	fmt.Printf("%s", new_sbc.PrintCount())
-	fmt.Printf("%s", new_sbc.PrintMigrate())
-	fmt.Printf("use time: %v\n", elapsed)
+func NewActionList() *ActionList {
+	return &ActionList{actions: make([]Action, 0)}
+}
 
-	fmt.Printf("------------------------------------------------\n")
-	fmt.Printf("Scale out: add MG[101], PE_Num = 20, PE weight=4\n")
-	fmt.Printf("------------------------------------------------\n")
+func (self *ActionList) Run() (*Device, string) {
+	var new_sbc *Device = nil
+	str := ""
 
-	start_time = time.Now()
-	new_sbc = new_sbc.ScaleOutMg(101, 20, 4)
-	elapsed = time.Since(start_time)
+	for _, v := range self.actions {
+		fmt.Printf("%s", v.Enter())
+		str += v.Enter()
+		start_time := time.Now()
+		new_sbc = v.Run(new_sbc)
+		elapsed := time.Since(start_time)
+		fmt.Printf("%s", new_sbc.PrintSimpleInfo())
+		fmt.Printf("use time: %v\n", elapsed)
 
-	fmt.Printf("%s", new_sbc.PrintCount())
-	fmt.Printf("%s", new_sbc.PrintMigrate())
-	fmt.Printf("use time: %v\n", elapsed)
+		str += fmt.Sprintf("%s", new_sbc.PrintSimpleInfo())
+		str += fmt.Sprintf("use time: %v\n", elapsed)
+	}
+	return new_sbc, str
+}
 
-	fmt.Printf("------------------------------------------------\n")
-	fmt.Printf("Scale in: del MG[101]\n")
-	fmt.Printf("------------------------------------------------\n")
+func (self *ActionList) Add(action Action) {
+	self.actions = append(self.actions, action)
+}
 
-	start_time = time.Now()
-	new_sbc = new_sbc.ScaleInMg(101)
-	elapsed = time.Since(start_time)
+func ParseLine(line string) (Action, bool) {
+	line = strings.ToLower(line)
+	name_end := strings.Index(line, ":")
+	name := strings.TrimSpace(line[:name_end])
 
-	fmt.Printf("%s", new_sbc.PrintCount())
-	fmt.Printf("%s", new_sbc.PrintMigrate())
-	fmt.Printf("use time: %v\n", elapsed)
+	line_left := strings.TrimSpace(line[name_end+1:])
 
-	fmt.Printf("------------------------------------------------\n")
-	fmt.Printf("Scale up: add MG[100], PE[21] weight=4 \n")
-	fmt.Printf("------------------------------------------------\n")
+	switch name {
+	case "power_on":
+		return ParsePowerOn(line_left)
+	case "scale_out":
+		return ParseScaleOut(line_left)
+	case "scale_in":
+		return ParseScaleIn(line_left)
+	case "scale_up":
+		return ParseScaleUp(line_left)
+	case "scale_down":
+		return ParseScaleDown(line_left)
+	}
+	return nil, false
+}
 
-	start_time = time.Now()
-	new_sbc = new_sbc.ScaleUpMg(100, 21, 4)
-	elapsed = time.Since(start_time)
+func ParseUint32Param(line string, name string) (val uint32, ok bool) {
+	if len(line) == 0 {
+		return 0, false
+	}
+	name_begin := strings.Index(line, name)
+	if name_begin < 0 {
+		return 0, false
+	}
 
-	fmt.Printf("%s", new_sbc.PrintCount())
-	fmt.Printf("%s", new_sbc.PrintMigrate())
-	fmt.Printf("use time: %v\n", elapsed)
+	ch := line[name_begin+len(name)]
 
-	fmt.Printf("------------------------------------------------\n")
-	fmt.Printf("Scale up: add MG[100], PE[22] weight=4 \n")
-	fmt.Printf("------------------------------------------------\n")
+	if ch != ' ' && ch != '\t' && ch != '=' {
+		return 0, false
+	}
 
-	start_time = time.Now()
-	new_sbc = new_sbc.ScaleUpMg(100, 22, 4)
-	elapsed = time.Since(start_time)
+	line = line[name_begin:]
 
-	fmt.Printf("%s", new_sbc.PrintCount())
-	fmt.Printf("%s", new_sbc.PrintMigrate())
-	fmt.Printf("use time: %v\n", elapsed)
+	val_begin := strings.Index(line, "=")
+	if val_begin < 0 {
+		return 0, false
+	}
 
-	fmt.Printf("------------------------------------------------\n")
-	fmt.Printf("Scale down: del MG[100], PE[22]\n")
-	fmt.Printf("------------------------------------------------\n")
+	line = line[val_begin+1:]
 
-	start_time = time.Now()
-	new_sbc = new_sbc.ScaleDownMg(100, 22)
-	elapsed = time.Since(start_time)
+	val_end := strings.Index(line, ",")
+	val_str := strings.TrimSpace(line[:val_end])
 
-	fmt.Printf("%s", new_sbc.PrintCount())
-	fmt.Printf("%s", new_sbc.PrintMigrate())
-	fmt.Printf("use time: %v\n", elapsed)
-	//*/
+	val1, err := strconv.ParseUint(val_str, 10, 32)
+	if err != nil {
+		return 0, false
+	}
+
+	return uint32(val1), true
+}
+
+func ParsePowerOn(line string) (Action, bool) {
+	if len(line) == 0 {
+		return nil, false
+	}
+
+	action := &ActionPowerOn{}
+	ok := false
+
+	action.rands_num, ok = ParseUint32Param(line, "rands_num")
+	if !ok {
+		return nil, false
+	}
+
+	action.mg_num, ok = ParseUint32Param(line, "mg_num")
+	if !ok {
+		return nil, false
+	}
+
+	action.pe_num, ok = ParseUint32Param(line, "pe_num")
+	if !ok {
+		return nil, false
+	}
+
+	action.pe_weight, ok = ParseUint32Param(line, "pe_weight")
+	if !ok {
+		return nil, false
+	}
+
+	return action, true
+}
+
+func ParseScaleOut(line string) (Action, bool) {
+	if len(line) == 0 {
+		return nil, false
+	}
+
+	action := &ActionScaleOut{}
+	ok := false
+
+	action.mg_id, ok = ParseUint32Param(line, "mg_id")
+	if !ok {
+		return nil, false
+	}
+
+	action.pe_num, ok = ParseUint32Param(line, "pe_num")
+	if !ok {
+		return nil, false
+	}
+
+	action.pe_weight, ok = ParseUint32Param(line, "pe_weight")
+	if !ok {
+		return nil, false
+	}
+
+	return action, true
+}
+
+func ParseScaleIn(line string) (Action, bool) {
+	if len(line) == 0 {
+		return nil, false
+	}
+
+	action := &ActionScaleIn{}
+	ok := false
+
+	action.mg_id, ok = ParseUint32Param(line, "mg_id")
+	if !ok {
+		return nil, false
+	}
+
+	return action, true
+}
+
+func ParseScaleUp(line string) (Action, bool) {
+	if len(line) == 0 {
+		return nil, false
+	}
+
+	action := &ActionScaleUp{}
+	ok := false
+
+	action.mg_id, ok = ParseUint32Param(line, "mg_id")
+	if !ok {
+		return nil, false
+	}
+
+	action.pe_id, ok = ParseUint32Param(line, "pe_id")
+	if !ok {
+		return nil, false
+	}
+
+	action.pe_weight, ok = ParseUint32Param(line, "pe_weight")
+	if !ok {
+		return nil, false
+	}
+
+	return action, true
+}
+
+func ParseScaleDown(line string) (Action, bool) {
+	if len(line) == 0 {
+		return nil, false
+	}
+
+	action := &ActionScaleDown{}
+	ok := false
+
+	action.mg_id, ok = ParseUint32Param(line, "mg_id")
+	if !ok {
+		return nil, false
+	}
+
+	action.pe_id, ok = ParseUint32Param(line, "pe_id")
+	if !ok {
+		return nil, false
+	}
+
+	return action, true
+}
+
+func ParseFile(filename string) *ActionList {
+	actions := NewActionList()
+
+	file, err := os.Open(filename)
+	if err != nil {
+		fmt.Printf("ERROR: cannot open file %s\n", filename)
+		return actions
+	}
+	defer file.Close()
+
+	reader := bufio.NewReader(file)
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil && io.EOF != err {
+			break
+		}
+
+		line = strings.TrimSpace(line)
+		if len(line) == 0 {
+			if io.EOF == err {
+				break
+			}
+			continue
+		}
+
+		action, ok := ParseLine(line)
+		if !ok {
+			fmt.Printf("ERROR: parse line failed: %s\n", line)
+			return nil
+		}
+		actions.Add(action)
+
+		if io.EOF == err {
+			break
+		}
+	}
+
+	return actions
+}
+
+type RunConfig struct {
+	cfgFileName    string
+	outputFileName string
+}
+
+func (self *RunConfig) Parse() {
+	flag.StringVar(&self.cfgFileName, "actions", "actions.cfg", "actions file name")
+	flag.StringVar(&self.outputFileName, "output", "result.txt", "output file name")
+
+	flag.Parse()
+}
+
+func (self *RunConfig) Check() bool {
+	_, err := os.Stat(self.cfgFileName)
+	if os.IsNotExist(err) {
+		fmt.Printf("ERROR: file \"%s\" is not exist", self.cfgFileName)
+		return false
+	}
+	return true
+}
+
+func OutputToFile(runConfig *RunConfig, str string) {
+	file, err := os.OpenFile(runConfig.outputFileName, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, os.ModePerm)
+	if err != nil {
+		fmt.Printf("ERROR: cannot open file %s to write\n", runConfig.outputFileName)
+		return
+	}
+	file.WriteString(str)
+	defer file.Close()
+}
+
+func main() {
+
+	runConfig := &RunConfig{}
+	runConfig.Parse()
+	if !runConfig.Check() {
+		return
+	}
+
+	actions := ParseFile(runConfig.cfgFileName)
+
+	/*actions := NewActionList()
+	actions.Add(&ActionPowerOn{rands_num: 400000, mg_num: 10, pe_num: 20, pe_weight: 4})
+	actions.Add(&ActionScaleOut{mg_id: 100, pe_num: 20, pe_weight: 4})
+	actions.Add(&ActionScaleOut{mg_id: 101, pe_num: 20, pe_weight: 4})
+	actions.Add(&ActionScaleIn{mg_id: 101})
+	actions.Add(&ActionScaleUp{mg_id: 100, pe_id: 21, pe_weight: 4})
+	actions.Add(&ActionScaleUp{mg_id: 100, pe_id: 22, pe_weight: 4})
+	actions.Add(&ActionScaleDown{mg_id: 100, pe_id: 22})*/
+
+	if actions == nil {
+		fmt.Printf("ERROR: parse file %s failed\n", runConfig.cfgFileName)
+		return
+	}
+
+	//fmt.Println(actions.actions)
+	_, str := actions.Run()
+
+	OutputToFile(runConfig, str)
 }
