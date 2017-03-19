@@ -287,7 +287,36 @@ func (self *PE) ScaleInMg(device *Device, mg_id uint32) {
 		if to_mg_id != mg_id {
 			device.Migrate(mg_id, self.id, to_mg_id, to_pe_id, key)
 		} else {
-			fmt.Println("scale in mg error: location not changed")
+			fmt.Println("PE ScaleInMg error: MG location not changed")
+		}
+	}
+}
+
+func (self *PE) ScaleUpMg(device *Device, mg_id uint32) {
+	for key, _ := range self.data {
+		to_mg_id, to_pe_id := device.Select(key)
+		//fmt.Printf("from_mg_id = %d, from_pe_id = %d, to_mg_id = %d, to_pe_id = %d\n", mg_id, self.id, to_mg_id, to_pe_id)
+		if to_mg_id != mg_id {
+			panic("PE ScaleUpMg error: not same MG")
+		}
+		if to_pe_id != self.id {
+			device.Migrate(mg_id, self.id, to_mg_id, to_pe_id, key)
+		}
+	}
+}
+
+func (self *PE) ScaleDownMg(device *Device, mg_id uint32) {
+	for key, _ := range self.data {
+		to_mg_id, to_pe_id := device.Select(key)
+		//fmt.Printf("from_mg_id = %d, from_pe_id = %d, to_mg_id = %d, to_pe_id = %d\n", mg_id, self.id, to_mg_id, to_pe_id)
+		if to_mg_id != mg_id {
+			panic("PE ScaleDownMg error: not same MG")
+		}
+
+		if to_pe_id != self.id {
+			device.Migrate(mg_id, self.id, to_mg_id, to_pe_id, key)
+		} else {
+			fmt.Println("PE ScaleDownMg error: PE location not changed")
 		}
 	}
 }
@@ -348,6 +377,15 @@ func (self *MG) Size() uint32 {
 	return uint32(len(self.pes))
 }
 
+func (self *MG) FindPeById(pe_id uint32) bool {
+	for _, v := range self.pes {
+		if v.id == pe_id {
+			return true
+		}
+	}
+	return false
+}
+
 func (self *MG) GetPeIndex(pe_id uint32) (index uint32) {
 	for i, v := range self.pes {
 		if pe_id == v.id {
@@ -383,6 +421,24 @@ func (self *MG) ScaleInMg(device *Device) {
 	}
 }
 
+func (self *MG) ScaleUpMg(device *Device, pe_id, pe_weight uint32) {
+	self.AddPe(pe_id, pe_weight)
+	for _, v := range self.pes {
+		if v.id != pe_id {
+			v.ScaleUpMg(device, self.id)
+		}
+	}
+}
+
+func (self *MG) ScaleDownMg(device *Device, pe_id uint32) {
+	pe_index := self.GetPeIndex(pe_id)
+
+	self.pe_bucket.DelItem(pe_index)
+	self.pes[pe_index].ScaleDownMg(device, self.id)
+
+	self.DelPe(pe_index)
+}
+
 func (self *MG) Select(key uint32) (pe_id uint32) {
 	return self.pe_bucket.Select2(self.id, key)
 }
@@ -391,6 +447,15 @@ func (self *MG) AddPe(pe_id, weight uint32) {
 	self.weight += weight
 	self.pes = append(self.pes, &PE{id: pe_id, weight: weight, data: make(map[uint32]uint32, 0)})
 	self.pe_bucket.AddItem(pe_id, weight)
+}
+
+func (self *MG) DelPe(pe_index uint32) {
+	pe := self.pes[pe_index]
+	//self.weight -= mg.weight
+	self.total -= uint32(len(pe.data))
+	self.pes = append(self.pes[:pe_index], self.pes[pe_index+1:]...)
+	//self.mg_bucket.DelItem(mg_index, mg.weight)
+	//fmt.Println("self.mg_bucket =", self.mg_bucket)
 }
 
 func (self *MG) AddData(index, data uint32) {
@@ -411,6 +476,16 @@ func (self *MG) MigrateInData(pe_index, data uint32) {
 func (self *MG) MigrateOutData(pe_index, data uint32) {
 	self.pes[pe_index].MigrateOutData(data)
 	self.migrate.migrateOut++
+	self.total--
+}
+
+func (self *MG) PeMigrateInData(pe_index, data uint32) {
+	self.pes[pe_index].MigrateInData(data)
+	self.total++
+}
+
+func (self *MG) PeMigrateOutData(pe_index, data uint32) {
+	self.pes[pe_index].MigrateOutData(data)
 	self.total--
 }
 
@@ -561,8 +636,7 @@ func (self *Device) AddMg(mg *MG) {
 	//fmt.Println("self.mg_bucket =", self.mg_bucket)
 }
 
-func (self *Device) DelMg(mg_id uint32) {
-	mg_index := self.GetMgIndex(mg_id)
+func (self *Device) DelMg(mg_index uint32) {
 	mg := self.mgs[mg_index]
 	self.weight -= mg.weight
 	self.total -= mg.total
@@ -695,8 +769,13 @@ func (self *Device) Migrate(from_mg_id, from_pe_id, to_mg_id, to_pe_id, data uin
 	from_pe_index := self.mgs[from_mg_index].GetPeIndex(from_pe_id)
 	to_pe_index := self.mgs[to_mg_index].GetPeIndex(to_pe_id)
 
-	self.mgs[from_mg_index].MigrateOutData(from_pe_index, data)
-	self.mgs[to_mg_index].MigrateInData(to_pe_index, data)
+	if from_mg_id != to_mg_id {
+		self.mgs[from_mg_index].MigrateOutData(from_pe_index, data)
+		self.mgs[to_mg_index].MigrateInData(to_pe_index, data)
+	} else {
+		self.mgs[from_mg_index].PeMigrateOutData(from_pe_index, data)
+		self.mgs[to_mg_index].PeMigrateInData(to_pe_index, data)
+	}
 }
 
 func (self *Device) FindMgById(mg_id uint32) bool {
@@ -739,7 +818,41 @@ func (self *Device) ScaleInMg(mg_id uint32) *Device {
 	device.mg_bucket.DelItem(mg_index)
 
 	device.mgs[mg_index].ScaleInMg(device)
-	device.DelMg(mg_id)
+	device.DelMg(mg_index)
+
+	return device
+}
+
+func (self *Device) ScaleUpMg(mg_id, pe_id, pe_weight uint32) *Device {
+	if !self.FindMgById(mg_id) {
+		fmt.Println("ScaleUpMg error: mg_id not exist, cannot scale up")
+		return self
+	}
+
+	device := self.Clone()
+
+	mg_index := device.GetMgIndex(mg_id)
+	mg := device.mgs[mg_index]
+	if mg.FindPeById(pe_id) {
+		fmt.Println("ScaleUpMg error: pe_id exist, cannot scale up")
+		return self
+	}
+
+	mg.ScaleUpMg(device, pe_id, pe_weight)
+
+	return device
+}
+
+func (self *Device) ScaleDownMg(mg_id, pe_id uint32) *Device {
+	if !self.FindMgById(mg_id) {
+		fmt.Println("ScaleDownMg error: mg_id not exist, need not scale down")
+		return self
+	}
+
+	device := self.Clone()
+
+	mg_index := device.GetMgIndex(mg_id)
+	device.mgs[mg_index].ScaleDownMg(device, pe_id)
 
 	return device
 }
@@ -812,6 +925,42 @@ func main() {
 
 	start_time = time.Now()
 	new_sbc = new_sbc.ScaleInMg(101)
+	elapsed = time.Since(start_time)
+
+	fmt.Printf("%s", new_sbc.PrintCount())
+	fmt.Printf("%s", new_sbc.PrintMigrate())
+	fmt.Printf("use time: %v\n", elapsed)
+
+	fmt.Printf("------------------------------------------------\n")
+	fmt.Printf("Scale up: add MG[100], PE[21] weight=4 \n")
+	fmt.Printf("------------------------------------------------\n")
+
+	start_time = time.Now()
+	new_sbc = new_sbc.ScaleUpMg(100, 21, 4)
+	elapsed = time.Since(start_time)
+
+	fmt.Printf("%s", new_sbc.PrintCount())
+	fmt.Printf("%s", new_sbc.PrintMigrate())
+	fmt.Printf("use time: %v\n", elapsed)
+
+	fmt.Printf("------------------------------------------------\n")
+	fmt.Printf("Scale up: add MG[100], PE[22] weight=4 \n")
+	fmt.Printf("------------------------------------------------\n")
+
+	start_time = time.Now()
+	new_sbc = new_sbc.ScaleUpMg(100, 22, 4)
+	elapsed = time.Since(start_time)
+
+	fmt.Printf("%s", new_sbc.PrintCount())
+	fmt.Printf("%s", new_sbc.PrintMigrate())
+	fmt.Printf("use time: %v\n", elapsed)
+
+	fmt.Printf("------------------------------------------------\n")
+	fmt.Printf("Scale down: del MG[100], PE[22]\n")
+	fmt.Printf("------------------------------------------------\n")
+
+	start_time = time.Now()
+	new_sbc = new_sbc.ScaleDownMg(100, 22)
 	elapsed = time.Since(start_time)
 
 	fmt.Printf("%s", new_sbc.PrintCount())
