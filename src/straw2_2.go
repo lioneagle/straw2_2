@@ -1284,22 +1284,11 @@ func main() {
 	}
 
 	actions := ParseFile(runConfig.cfgFileName)
-
-	/*actions := NewActionList()
-	actions.Add(&ActionPowerOn{rands_num: 400000, mg_num: 10, pe_num: 20, pe_weight: 4})
-	actions.Add(&ActionScaleOut{mg_id: 100, pe_num: 20, pe_weight: 4})
-	actions.Add(&ActionScaleOut{mg_id: 101, pe_num: 20, pe_weight: 4})
-	actions.Add(&ActionScaleIn{mg_id: 101})
-	actions.Add(&ActionScaleUp{mg_id: 100, pe_id: 21, pe_weight: 4})
-	actions.Add(&ActionScaleUp{mg_id: 100, pe_id: 22, pe_weight: 4})
-	actions.Add(&ActionScaleDown{mg_id: 100, pe_id: 22})*/
-
 	if actions == nil {
 		fmt.Printf("ERROR: parse file %s failed\n", runConfig.cfgFileName)
 		return
 	}
 
-	//fmt.Println(actions.actions)
 	_, str := actions.Run()
 
 	OutputToFile(runConfig, str)
